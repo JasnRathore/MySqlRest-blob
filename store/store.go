@@ -68,6 +68,37 @@ func (store *MySqlStore) CreateBucket(bucketName string) error {
 	return nil
 }
 
+func (store *MySqlStore) DeleteBucket(bucketName string) error {
+	if bucketName == "" {
+		return errors.New("bucketName cannot be empty")
+	}
+	if store.db == nil {
+		return errors.New("database connection is not initialized")
+	}
+
+	// First check if the bucket exists
+	checkSQL := "SELECT COUNT(*) FROM information_schema.tables WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?"
+	var count int
+	err := store.db.QueryRow(checkSQL, bucketName).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to check if bucket '%s' exists: %w", bucketName, err)
+	}
+
+	if count == 0 {
+		return fmt.Errorf("bucket '%s' not found", bucketName)
+	}
+
+	// Drop the table (bucket)
+	dropTableSQL := fmt.Sprintf("DROP TABLE %s", bucketName)
+	_, err = store.db.Exec(dropTableSQL)
+	if err != nil {
+		return fmt.Errorf("failed to delete bucket '%s': %w", bucketName, err)
+	}
+
+	fmt.Printf("Successfully deleted bucket '%s'.\n", bucketName)
+	return nil
+}
+
 func (store *MySqlStore) InsertFile(bucketName string, fileName string, fileData []byte) error {
 	if bucketName == "" {
 		return errors.New("bucketName cannot be empty")
@@ -106,6 +137,42 @@ func (store *MySqlStore) InsertFile(bucketName string, fileName string, fileData
 	}
 
 	return nil // No error
+}
+
+func (store *MySqlStore) DeleteFile(bucketName string, fileName string) error {
+	if bucketName == "" {
+		return errors.New("bucketName cannot be empty")
+	}
+	if fileName == "" {
+		return errors.New("fileName cannot be empty")
+	}
+	if store.db == nil {
+		return errors.New("database connection is not initialized")
+	}
+
+	deleteSQL := fmt.Sprintf("DELETE FROM %s WHERE file_name = ?", bucketName)
+	stmt, err := store.db.Prepare(deleteSQL)
+	if err != nil {
+		return fmt.Errorf("failed to prepare delete statement for bucket '%s': %w", bucketName, err)
+	}
+	defer stmt.Close()
+
+	result, err := stmt.Exec(fileName)
+	if err != nil {
+		return fmt.Errorf("failed to delete file '%s' from bucket '%s': %w", fileName, bucketName, err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected for file '%s' in bucket '%s': %w", fileName, bucketName, err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("file '%s' not found in bucket '%s'", fileName, bucketName)
+	}
+
+	fmt.Printf("Successfully deleted file '%s' from bucket '%s'. Rows affected: %d\n", fileName, bucketName, rowsAffected)
+	return nil
 }
 
 func (store *MySqlStore) GetFile(bucketName string, fileName string) ([]byte, error) {

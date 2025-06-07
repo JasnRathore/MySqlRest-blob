@@ -125,6 +125,34 @@ func CreateBucketHandler(w http.ResponseWriter, r *http.Request) {
 	sendJSONResponse(w, map[string]string{"message": fmt.Sprintf("Bucket '%s' created successfully.", requestBody.BucketName)}, http.StatusCreated)
 }
 
+func DeleteBucketHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		sendJSONError(w, "Method Not Allowed", "Only DELETE method is supported.", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract bucketName from URL path /buckets/{bucketName}
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) != 3 || parts[2] == "" {
+		sendJSONError(w, "Bad Request", "Invalid URL path. Expected /buckets/{bucketName}", http.StatusBadRequest)
+		return
+	}
+	bucketName := parts[2]
+
+	log.Printf("Attempting to delete bucket: %s", bucketName)
+	err := myStore.DeleteBucket(bucketName)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			sendJSONError(w, "Not Found", fmt.Sprintf("Bucket '%s' not found.", bucketName), http.StatusNotFound)
+		} else {
+			sendJSONError(w, "Internal Server Error", fmt.Sprintf("Failed to delete bucket: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	sendJSONResponse(w, map[string]string{"message": fmt.Sprintf("Bucket '%s' deleted successfully.", bucketName)}, http.StatusOK)
+}
+
 // GetBucketsHandler handles GET /buckets requests to retrieve all bucket names.
 func GetBucketsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -191,6 +219,35 @@ func InsertFileHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sendJSONResponse(w, map[string]string{"message": fmt.Sprintf("File '%s' inserted successfully into bucket '%s'.", requestBody.FileName, bucketName)}, http.StatusCreated)
+}
+
+func DeleteFileHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		sendJSONError(w, "Method Not Allowed", "Only DELETE method is supported.", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract bucketName and fileName from URL path /buckets/{bucketName}/files/{fileName}
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) != 5 || parts[2] == "" || parts[3] != "files" || parts[4] == "" {
+		sendJSONError(w, "Bad Request", "Invalid URL path. Expected /buckets/{bucketName}/files/{fileName}", http.StatusBadRequest)
+		return
+	}
+	bucketName := parts[2]
+	fileName := parts[4]
+
+	log.Printf("Attempting to delete file '%s' from bucket '%s'", fileName, bucketName)
+	err := myStore.DeleteFile(bucketName, fileName)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			sendJSONError(w, "Not Found", fmt.Sprintf("File '%s' not found in bucket '%s'.", fileName, bucketName), http.StatusNotFound)
+		} else {
+			sendJSONError(w, "Internal Server Error", fmt.Sprintf("Failed to delete file: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	sendJSONResponse(w, map[string]string{"message": fmt.Sprintf("File '%s' deleted successfully from bucket '%s'.", fileName, bucketName)}, http.StatusOK)
 }
 
 func GetFilesHandler(w http.ResponseWriter, r *http.Request) {
@@ -277,14 +334,22 @@ func main() {
 	// GET /buckets (list all buckets)
 	mux.HandleFunc("/buckets", GetBucketsHandler) 
 
-	// POST /buckets (create a bucket)
+	// POST /buckets/create (create a bucket)
 	mux.HandleFunc("/buckets/create", CreateBucketHandler)
 
 	// Handlers for /buckets/{bucketName}/files and /buckets/{bucketName}/files/{fileName}
-	// Thse will use a single handler that dispatches based on URL structure.
+	// These will use a single handler that dispatches based on URL structure.
 	mux.HandleFunc("/buckets/", func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimSuffix(r.URL.Path, "/") // Normalize path by removing trailing slash for easier parsing
 		parts := strings.Split(path, "/")
+
+		// /buckets/{bucketName} - DELETE bucket
+		if len(parts) == 3 && parts[2] != "" {
+			if r.Method == http.MethodDelete {
+				DeleteBucketHandler(w, r)
+				return
+			}
+		}
 
 		// /buckets/{bucketName}/files
 		if len(parts) == 4 && parts[3] == "files" {
@@ -302,12 +367,14 @@ func main() {
 			if r.Method == http.MethodGet {
 				GetFileHandler(w, r) // This handler now serves the file directly
 				return
+			} else if r.Method == http.MethodDelete {
+				DeleteFileHandler(w, r)
+				return
 			}
 		}
 
 		sendJSONError(w, "Not Found", "The requested resource was not found or method not supported.", http.StatusNotFound)
 	})
-
 
 	port := ":8080"
 	log.Printf("Starting HTTP server on port %s...", port)
